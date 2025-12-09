@@ -27,6 +27,7 @@ static int IniGetInt(const std::wstring& sec, LPCWSTR key, int defVal = 0)
 {
 	return ::GetPrivateProfileIntW(sec.c_str(), key, defVal, gIniPath.c_str());
 }
+
 static std::wstring IniGetStr(const std::wstring& sec, LPCWSTR key,
 	LPCWSTR defVal = L"")
 {
@@ -39,12 +40,13 @@ static std::wstring IniGetStr(const std::wstring& sec, LPCWSTR key,
 /* ---------------- Job 구조체 ----------------------------- */
 struct Job
 {
-	int        idx = 0;
-	int        bayerOrder = 1;   // 0~3
-	bool       toBmp = true;
-	bool       toJpg = true;
-	int        channelCnt = 1;   // 1 or 3
-	fs::path   src, dst;
+	int         idx = 0;
+	int         bayerOrder = 1;   // 0~3
+	bool        toBmp = true;
+	bool        toJpg = true;
+	int         channelCnt = 1;   // 1 or 3
+	int         bayerInterp = 0;  // 0:ColorCorr, 1:Adaptive, 2:Avg, 3:Bilinear
+	fs::path    src, dst;
 };
 
 /* ---------------- INI → Job 벡터 ------------------------- */
@@ -78,7 +80,7 @@ static std::vector<Job> LoadJobsFromIni()
 				<< L" 이지만 " << (hasInfo ? L"" : secInfo)
 				<< (!hasInfo && !hasPath ? L"/" : L"")
 				<< (hasPath ? L"" : secPath)
-				<< L" 섹션이 없습니다. 해당 Job 건너뜀.\n";
+				<< L" 섹션이 없습니다. 해당 Job 건너뜜.\n";
 			continue;
 		}
 
@@ -89,6 +91,7 @@ static std::vector<Job> LoadJobsFromIni()
 		j.toBmp = IniGetInt(secInfo, L"CONVERT_BMP", 1);
 		j.toJpg = IniGetInt(secInfo, L"CONVERT_JPG", 1);
 		j.channelCnt = IniGetInt(secInfo, L"CHANNEL_CNT", 1);
+		j.bayerInterp = IniGetInt(secInfo, L"BayerInterpolation", 0); // 신규 키 로드
 
 		j.src = IniGetStr(secPath, L"Source mim path", L"");
 		j.dst = IniGetStr(secPath, L"Target img path", L"");
@@ -213,8 +216,18 @@ static void RunOneJob(const Job& jb, MIL_ID milSys, MIL_ID hCoef)
 			};
 
 			if (b == 1) {
-				//MbufBayer(hRaw, hClr, hCoef, ToMilBayer(jb.bayerOrder));
-				MbufBayer(hRaw, hClr, hCoef, ToMilBayer(jb.bayerOrder) + M_COLOR_CORRECTION);
+				// -- 보간(Interpolation) 옵션 결정 --
+				MIL_INT64 interpFlag = 0;
+				switch (jb.bayerInterp) {
+				case 1:  interpFlag = M_ADAPTIVE_FAST;   break;
+				case 2:  interpFlag = M_AVERAGE_2X2;     break;
+				case 3:  interpFlag = M_BILINEAR;        break;
+				case 0:
+				default: interpFlag = M_ADAPTIVE + M_COLOR_CORRECTION; break;
+				}
+
+				MbufBayer(hRaw, hClr, hCoef, ToMilBayer(jb.bayerOrder) + interpFlag);
+
 				if (needBmp) save(bmp, M_BMP, hClr);
 				if (needJpg) save(jpg, M_JPEG_LOSSY, hClr);
 			}
@@ -234,7 +247,7 @@ static void RunOneJob(const Job& jb, MIL_ID milSys, MIL_ID hCoef)
 }
 
 /* =========================================================
- *                           main
+ * main
  * =======================================================*/
 int wmain(int argc, wchar_t* argv[])
 {
